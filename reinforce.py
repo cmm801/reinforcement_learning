@@ -1,6 +1,5 @@
 import numpy as np
 import tensorflow as tf
-import matplotlib.pyplot as plt
 
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense
@@ -114,6 +113,4 @@ class Reinforce():
                 rewards.append(new_rwd)
 
             print("mean reward:%.3f" % (np.mean(rewards)))
-            
-    def render(self):
-        plt.imshow(self.env.render("rgb_array")) 
+
