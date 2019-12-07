@@ -6,7 +6,7 @@ from IPython.display import clear_output
 from tqdm import trange
 import matplotlib.pyplot as plt
 
-from tensorflow.keras.layers import Conv2D, Dense, Flatten, Input
+from tensorflow.keras.layers import Dense, Input
 from tensorflow.keras.models import Model
 
 # Use float32 by default
