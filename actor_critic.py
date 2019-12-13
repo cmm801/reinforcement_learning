@@ -58,14 +58,10 @@ class ActorCritic():
         else:
             self.critic_model = critic_model                        
     
-    def sample_actions(self, distrib_params ):
+    def choose_action_from_state(self, state ):
         """pick actions given numeric agent outputs (np arrays)"""
+        distrib_params = self.actor_model(state)
         return self._env_helper.sample_actions(distrib_params)
-
-    def get_action_distributions(self, state):
-        scaled_state = self._apply_scaling(state)
-        params = self.actor_model(scaled_state)        
-        return self._env_helper.get_action_distributions(params)  
         
     def get_state_values(self, state):
         scaled_state = self._apply_scaling(state)
@@ -80,7 +76,7 @@ class ActorCritic():
             tape.watch(self.critic_model.trainable_variables)
             
             # Get the probability distribution over possible actions, conditional on the state
-            distrib = self.get_action_distributions(states)
+            distrib = self._get_action_distributions(states)
 
             # Get the estimated value of the current and next state
             state_values = self.get_state_values(states)       
@@ -110,7 +106,12 @@ class ActorCritic():
         self.critic_optimizer.apply_gradients( zip( grads_critic, self.critic_model.trainable_variables ) )        
         
         return actor_loss, critic_loss, entropy
-            
+
+    def _get_action_distributions(self, state):
+        scaled_state = self._apply_scaling(state)
+        params = self.actor_model(scaled_state)        
+        return self._env_helper.get_action_distributions(params)  
+    
     def _apply_scaling(self, state):
         if self.scale_model_inputs:
             return self._standard_scaler.transform(state)
@@ -122,16 +123,15 @@ class ActorCritic():
 
         # Create a temporary environment to play some games
         tmp_env = make_env( self.env.environ_name, max_steps=self.env.max_steps)
-        
+
         game_rewards = []
         for _ in range(n_games):
-            state = tmp_env.reset()
+            state = np.array([tmp_env.reset()])
 
             total_reward = 0
             while True:
-                distrib = self.get_action_distributions(state[np.newaxis,:])
-                action = distrib.sample()                
-                state, reward, done, info = tmp_env.step(action)
+                action = self.choose_action_from_state(state)
+                tstate, reward, done, info = tmp_env.step(action)
                 total_reward += reward
                 if done: break
 
@@ -149,8 +149,7 @@ class ActorCritic():
         entropy_history = []        
 
         for i in trange(n_iters):
-            distrib = self.get_action_distributions(batch_states)
-            batch_actions = distrib.sample()
+            batch_actions = self.choose_action_from_state(batch_states)
             batch_next_states, batch_rewards, batch_done, _ = self.env.step(batch_actions)
 
             # Train the neural network from the states, rewards and transitions
@@ -209,7 +208,7 @@ class EnvBatch():
         
     def reset(self):
         """ Reset all games and return [n_envs, *obs_shape] observations """
-        return np.array([env.reset() for env in self.envs])
+        return np.vstack( [ env.reset().ravel().T for env in self.envs] )
     
     def step(self, actions):
         """
@@ -218,6 +217,7 @@ class EnvBatch():
         """
         results = [env.step(a) for env, a in zip(self.envs, actions)]
         new_obs, rewards, done, info = map(np.array, zip(*results))
+        new_obs = np.vstack( [ x.ravel().T for x in new_obs ] )
         
         # reset environments automatically
         for i in range(len(self.envs)):
