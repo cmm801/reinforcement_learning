@@ -110,8 +110,12 @@ class NormalDistribution(Distribution):
         
     def __init__(self, np_random, mu, sigma ):
         super().__init__(np_random)        
-        self.mu = mu
-        self.sigma = sigma
+        M = np.array(mu)
+        S = np.array( sigma )
+        assert S.ndim == 2 and S.shape[0] == S.shape[1], 'Covariance must be a square matrix.'
+        assert M.ndim == 1 and S.shape[0] == M.size, 'Covariance and mean dimensions must be the same.'
+        self.mu = M        
+        self.sigma = S
         
     def random(self, n_samples=1):
         return self.np_random.multivariate_normal(self.mu, self.sigma, size=n_samples)

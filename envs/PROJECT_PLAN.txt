@@ -29,20 +29,20 @@ When we do updates, we can use the expected values of the reward and of the valu
 
 
 Testing:
-1. Distributions
-2. Portfolio value calculation
-3. Transaction costs are deducted properly
-4. Benchmarks are calculated
-5. Objective functions
-6. Utility functions
-7. Parsing of parameters
-8. Observation space
-9. Action apce
-10. Input parameters are utilized properly and have the desired effect on the environment
+- Objective functions
+- Utility functions
+- Parsing observations
+- Parsing of parameters
+- Observation space
+- Action space
+- projection onto space satisfying all constraints
+- Input parameters are utilized properly and have the desired effect on the environment
 
 
 Generalization:
-1. Allow transaction costs to be a single number or an array with length equal to the number of risky assets
-2. Allow shorting/leverage constraints to be a single number or an array of length equal to # of risky assets
+- Replace weights with asset market values in the environment
+- Rescale transaction sizes if they cause the cash level to go below its minimum allowed level
+- Allow transaction costs to be a single number or an array with length equal to the number of risky assets
+- Allow shorting/leverage constraints to be a single number or an array of length equal to # of risky assets
 
 
