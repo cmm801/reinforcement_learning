@@ -2,19 +2,21 @@ import numpy as np
 from abc import ABC, abstractmethod
 from collections import namedtuple
 
+ExponentialUtilityFunction = lambda ptf_val : -np.exp(-2*ptf_val)
 ParameterRanges = namedtuple( 'ParamRange', [ 'low', 'high' ] )
 class AssetProcess(ABC):
     
-    def __init__(self, n_risky_assets=1, trading_periods_per_year=52):
+    def __init__(self, np_random, n_risky_assets=1, n_periods_per_year=52):
+        self.np_random = np_random
         self.n_risky_assets = n_risky_assets
-        self.trading_periods_per_year = trading_periods_per_year
+        self.n_periods_per_year = n_periods_per_year
         self.risk_free_rate = 0.01
         self.distrib = None
-        self.reset_distribution()        
+        self.reset_distribution()
     
     def generate_random_returns(self, n_samples=1):
         exc_rtns = self.distrib.random(n_samples=n_samples)
-        ann_asset_rtns = self.risk_free_rate + np.hstack( [ np.zeros( (exc_rtns.shape[0],1) ), exc_rtns ] )
+        ann_asset_rtns = self.risk_free_rate + np.hstack( [ np.zeros( (exc_rtns.shape[0],1) ), exc_rtns])
         return self._deannualize_return(ann_asset_rtns)
              
     def evolve(self):
@@ -25,12 +27,12 @@ class AssetProcess(ABC):
         
     def reset_distribution(self):
         param_ranges = self.get_parameter_ranges()
-        array_of_params = np.random.uniform( param_ranges.low, param_ranges.high )
+        array_of_params = self.np_random.uniform( param_ranges.low, param_ranges.high )
         params = self.array_to_params(array_of_params)
         self.set_distribution(params)
 
     def _deannualize_return(self, rtn):
-        return -1 + np.power(1 + rtn, 1/self.trading_periods_per_year)
+        return -1 + np.power(1 + rtn, 1/self.n_periods_per_year)
         
     @abstractmethod        
     def get_parameter_ranges(self):
@@ -89,17 +91,16 @@ class NormalStaticProcess(AssetProcess):
         return np.hstack( [ params['mu'].ravel(), chol[idx].ravel() ] )
         
     def set_distribution(self, params):
-        self.distrib = NormalDistribution( params['mu'], params['sigma'])
+        self.distrib = NormalDistribution( self.np_random, params['mu'], params['sigma'])
             
 class LognormalStaticProcess(NormalStaticProcess):
     def set_distribution(self, params):
-        self.distrib = LognormalDistribution( params['mu'], params['sigma'])
+        self.distrib = LognormalDistribution( self.np_random, params['mu'], params['sigma'])
 
 class Distribution(ABC):
 
-    def __init(self):
-        self.n_params = None
-        self.params = None
+    def __init__(self, np_random ):
+        self.np_random = np_random
 
     @abstractmethod
     def random(self, n_samples=1):
@@ -107,15 +108,14 @@ class Distribution(ABC):
         
 class NormalDistribution(Distribution):
         
-    def __init__(self, mu, sigma ):
+    def __init__(self, np_random, mu, sigma ):
+        super().__init__(np_random)        
         self.mu = mu
         self.sigma = sigma
         
     def random(self, n_samples=1):
-        return np.random.multivariate_normal(self.mu, self.sigma, size=n_samples)
+        return self.np_random.multivariate_normal(self.mu, self.sigma, size=n_samples)
                 
 class LognormalDistribution(NormalDistribution):
     def random(self, n_samples=1):
-        return -1 + np.exp( np.random.multivariate_normal(self.mu, self.sigma, size=n_samples) )
-    
-   
+        return -1 + np.exp( self.np_random.multivariate_normal(self.mu, self.sigma, size=n_samples) )
