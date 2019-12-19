@@ -4,7 +4,7 @@ from collections import namedtuple
 import distributions
 
 # Define a named tuple to help with parameters
-fields = [ 'timestamp', 'ptf_val', 'ptf_wts', 'bmk_val', 'bmk_wts', 'process_params' ]
+fields = [ 'timestamp', 'ptf_asset_vals', 'bmk_asset_vals', 'process_params' ]
 defaults = (None,) * len(fields)
 StateVariables = namedtuple( 'StateVariables', fields, defaults=defaults )
 
@@ -39,6 +39,8 @@ class PortfolioEnv(gym.Env):
         for field_name, input_val in input_args.items():
             self.__setattr__( field_name, input_val )
         self.set_utility_function(utility_fun)
+        if benchmark_weights is not None:
+            self.benchmark_weights = np.array( benchmark_weights )
         
         # Set the internal random number generator, whose seed can be used to obtain reproducible results
         self.np_random = np.random.RandomState()
@@ -63,34 +65,39 @@ class PortfolioEnv(gym.Env):
         chg_wts = self._project_action_to_allowable_weight_space(action)
         
         # Get the new portfolio value, treating the action as the change in weights of risky assets
-        new_ptf_val, new_ptf_wts = self._calculate_portfolio_value( ptf_val=self.state_vars.ptf_val, \
-                            old_wts=self.state_vars.ptf_wts, asset_rtns=asset_rtns, chg_wts=chg_wts )
-        new_bmk_val, new_bmk_wts = self._calculate_portfolio_value( ptf_val=self.state_vars.bmk_val, \
-                            old_wts=self.state_vars.bmk_wts, asset_rtns=asset_rtns )
+        ptf_kwargs = dict( ptf_asset_vals=self.state_vars.ptf_asset_vals, asset_rtns=asset_rtns, \
+                                                                                  chg_wts=chg_wts)
+        new_ptf_asset_vals = self._calc_ptf_asset_vals(**ptf_kwargs)
+
+        if self.benchmark_weights is None:
+            new_bmk_asset_vals = None
+        else:
+            bmk_kwargs = dict( ptf_asset_vals=self.state_vars.bmk_asset_vals, asset_rtns=asset_rtns )            
+            new_bmk_asset_vals = self._calc_ptf_asset_vals(**bmk_kwargs)
         
         # Save the state process, and Evolve the asset process (if it is non-static)
         old_state_vars = self.state_vars
         self.asset_process.evolve()
         self.state_vars = StateVariables( timestamp=1 + old_state_vars.timestamp,
-                                          ptf_val=new_ptf_val, ptf_wts=new_ptf_wts,
-                                          bmk_val=new_bmk_val, bmk_wts=new_bmk_wts, 
+                                          ptf_asset_vals=new_ptf_asset_vals, 
+                                          bmk_asset_vals=new_bmk_asset_vals,                                          
                                           process_params=self.asset_process.get_parameters() )
         obs = self._get_observation_from_state_vars()
         
         # Calculate the reward from the old and new state parameters        
         reward = self._calculate_reward( old_state_vars, self.state_vars )
-        done = (self.state_vars.ptf_val == 0) or \
+        done = np.isclose( self.state_vars.ptf_asset_vals.sum(), 0.0 ) or \
                (self.state_vars.timestamp == self.n_years * self.n_periods_per_year) 
         info = {'asset_rtns' : asset_rtns, 'chg_wts' : chg_wts }        
         return obs, reward, done, info
         
     def reset(self):
         """Reset the state of the environment to an initial state."""        
-        ptf_val, ptf_wts, bmk_val, bmk_wts = self._generate_initial_portfolios()
+        ptf_asset_vals, bmk_asset_vals = self._generate_initial_portfolios()
         process_params = self._generate_initial_process()
         self.state_vars = StateVariables( timestamp=0,
-                                          ptf_val=ptf_val, ptf_wts=ptf_wts,
-                                          bmk_val=bmk_val, bmk_wts=bmk_wts, 
+                                          ptf_asset_vals=ptf_asset_vals, 
+                                          bmk_asset_vals=bmk_asset_vals,  
                                           process_params=process_params )
         return self._get_observation_from_state_vars()
     
@@ -99,29 +106,19 @@ class PortfolioEnv(gym.Env):
         pass
     
     def parse_observation( self, obs ):
-        N = self.n_risky_assets
-        
+        N = self.n_risky_assets        
         timestamp=obs[0]
-
-        ptf_val=obs[1]
-        ptf_wts_risky = obs[2:2+N].ravel()
-        ptf_wt_cash = 1 - sum(ptf_wts_risky)        
-        ptf_wts = np.hstack( [ ptf_wt_cash, ptf_wts_risky ] )
-
+        ptf_asset_vals=obs[1:N+2].ravel()
         if self.benchmark_weights is not None:
-            bmk_val=obs[2+N]
-            bmk_wts_risky = obs[3+N:3+2*N].ravel()
-            bmk_wt_cash = 1 - sum(ptf_wts_risky)        
-            bmk_wts = np.hstack( [ bmk_wt_cash, bmk_wts_risky ] )        
-        
+            bmk_asset_vals=obs[2+N:3+2*N].ravel()        
             process_params = self.asset_process.array_to_params(obs[3+2*N:])
         else:
-            bmk_val = bmk_wts = None
+            bmk_asset_vals = None
             process_params = self.asset_process.array_to_params(obs[2+N:])
             
         return StateVariables( timestamp=timestamp,
-                               ptf_val=ptf_val, ptf_wts=ptf_wts, 
-                               bmk_val=bmk_val, bmk_wts=bmk_wts, 
+                               ptf_asset_vals=ptf_asset_vals, 
+                               bmk_asset_vals=bmk_asset_vals,  
                                process_params=process_params )
     
     def set_utility_function(self, utility_fun):
@@ -130,16 +127,25 @@ class PortfolioEnv(gym.Env):
         else:
             self.utility_fun = utility_fun
             
+    def set_asset_process( self, new_asset_process ):
+        self.asset_process = new_asset_process        
+        sv = self.state_vars
+        self.state_vars = StateVariables( timestamp=sv.timestamp, 
+                                          ptf_asset_vals=sv.ptf_asset_vals,
+                                          bmk_asset_vals=sv.bmk_asset_vals, 
+                                          process_params=new_asset_process.get_parameters() )
+        return self._get_observation_from_state_vars()
+            
     def _get_observation_from_state_vars(self):
         sv = self.state_vars
         if self.benchmark_weights is not None:
             return np.hstack( [ sv.timestamp, 
-                                sv.ptf_val, sv.ptf_wts[1:].ravel(), 
-                                sv.bmk_val, sv.bmk_wts[1:].ravel(), 
+                                sv.ptf_asset_vals.ravel(), 
+                                sv.bmk_asset_vals.ravel(), 
                                 self.asset_process.params_to_array(sv.process_params) ] )
         else:
             return np.hstack( [ sv.timestamp, 
-                                sv.ptf_val, sv.ptf_wts[1:].ravel(), 
+                                sv.ptf_asset_vals.ravel(),  
                                 self.asset_process.params_to_array(sv.process_params) ] )        
         
     def _get_asset_process_parans(self):
@@ -152,11 +158,11 @@ class PortfolioEnv(gym.Env):
     def _calculate_reward( self, old_state_vars, new_state_vars ):
         """Calculate the reward for a new time step, as the change in discounted utility."""
         if 'total-wealth' == self.objective:
-            x_old = old_state_vars.ptf_val
-            x_new = new_state_vars.ptf_val
+            x_old = old_state_vars.ptf_asset_vals.sum()
+            x_new = new_state_vars.ptf_asset_vals.sum()
         elif 'relative-profit' == self.objective:
-            x_old = old_state_vars.ptf_val - old_state_vars.bmk_val
-            x_new = new_state_vars.ptf_val - new_state_vars.bmk_val
+            x_old = old_state_vars.ptf_asset_vals.sum() - old_state_vars.bmk_asset_vals.sum()
+            x_new = new_state_vars.ptf_asset_vals.sum() - new_state_vars.bmk_asset_vals.sum()
         else:
             raise ValueError( 'Unsupported objective: {}'.format(objective) )
 
@@ -167,7 +173,7 @@ class PortfolioEnv(gym.Env):
     
     def get_gamma(self):
         """Get the discount factor from the risk-free rate."""
-        return np.exp( -self.asset_process.risk_free_rate / self.n_periods_per_year )        
+        return - 1 + np.power( 1 + self.asset_process.risk_free_rate, 1 / self.n_periods_per_year )
         
     def _setup_spaces(self):
         """Set up the action and observation spaces."""
@@ -178,9 +184,9 @@ class PortfolioEnv(gym.Env):
                                             high = +wt_interval * np.ones( (N+1,) ) )
         # Define the dimensions of the observation space, starting with the portfolio value & weights
         param_ranges = self.asset_process.get_parameter_ranges()
-        min_ptf_val, max_ptf_val = 0, np.inf
-        low  = np.hstack( [ min_ptf_val, -wt_interval * np.ones((N,)) ] )
-        high = np.hstack( [ max_ptf_val, +wt_interval * np.ones((N,)) ] )
+        min_asset_val, max_asset_val = -np.inf, np.inf
+        low  = min_asset_val * np.ones((N+1,))
+        high = max_asset_val * np.ones((N+1,))
                 
         if self.benchmark_weights is not None:
             # Repeat the low / high limits for the benchmark
@@ -192,37 +198,30 @@ class PortfolioEnv(gym.Env):
         high = np.hstack( [ self.n_years * self.n_periods_per_year, high, param_ranges.high ] )        
         self.observation_space = gym.spaces.Box( low=low, high=high )
     
-    def _calculate_portfolio_value( self, ptf_val, old_wts, asset_rtns, chg_wts=None ):
-        """Calculate the new portfolio value and new weights.
-           This method subtracts any transaction costs from the cash allocation, and then
-             rescales the weights so that they sum to 1."""
-        
-        # When benchmark is None, there are no weights assigned. In this case, we return None
-        if ptf_val is None or old_wts is None:
-            return None, None
-        
+    def _calc_ptf_asset_vals( self, ptf_asset_vals, asset_rtns, chg_wts=None ):
+        """Calculate the new asset values.
+           This method subtracts any transaction costs from the cash allocation."""        
         if chg_wts is None:
-            chg_wts = np.zeros_like(old_wts)
+            chg_wts = np.zeros_like(asset_rtns)
+        else:
+            assert np.isclose( chg_wts.sum(), 0 ), 'Changes in weights must sum to 0.'
         
-        if self.trans_costs > 0:
-            # Fund transaction costs from the cash allocation
-            asset_mkt_val = ptf_val * old_wts
-            asset_mkt_val[0] -= self.trans_costs * np.sum( np.abs(chg_wts[1:]) ) * ptf_val
-            ptf_val = asset_mkt_val.sum()
-            old_wts = asset_mkt_val / ptf_val
-            
-        new_wts = old_wts + chg_wts            
-        assert np.isclose( new_wts.sum(), 1.0 ), 'Weights must sum to 1.'
-        ptf_rtn = np.matmul( new_wts, asset_rtns.T )[0]
-        new_ptf_val = max( 0, ptf_val * ( 1 + ptf_rtn ) )
-        return new_ptf_val, new_wts
+        # Obtain the new weights from the old, and deduct transaction costs from cash
+        tot_ptf_val = ptf_asset_vals.sum()
+        ptf_asset_vals_ex_cost = ptf_asset_vals + chg_wts * tot_ptf_val
+        ptf_asset_vals_ex_cost[0] -= np.sum( self.trans_costs * np.abs(chg_wts[1:]) ) * tot_ptf_val
+        return ptf_asset_vals_ex_cost.ravel() * (1 + asset_rtns.ravel() )
                
     def _generate_initial_portfolios(self):
-        ptf_val = 1.0 - 0.1 * self.np_random.randn()
-        ptf_wts = self.np_random.dirichlet( np.ones( (1 + self.n_risky_assets,) ) )
-        bmk_val = ptf_val
-        bmk_wts = self.benchmark_weights
-        return ptf_val, ptf_wts, bmk_val, bmk_wts 
+        initial_ptf_val = 1.0 - 0.1 * self.np_random.randn()
+        initial_ptf_wts = self.np_random.dirichlet( np.ones( (1 + self.n_risky_assets,) ) )
+        ptf_asset_vals = initial_ptf_val * initial_ptf_wts
+
+        if self.benchmark_weights is not None:
+            bmk_asset_vals = initial_ptf_val * self.benchmark_weights 
+        else:
+            bmk_asset_vals = None            
+        return ptf_asset_vals, bmk_asset_vals
             
     def _generate_initial_process(self):
         process_args = dict(n_risky_assets=self.n_risky_assets, np_random=self.np_random, \
@@ -236,10 +235,10 @@ class PortfolioEnv(gym.Env):
         return self.asset_process.get_parameters()    
     
     def _project_action_to_allowable_weight_space(self, action):
-
-        # Get the direction of the change in weights
-        wt_chg_direction = np.hstack( [ -action.sum(), action ] )
-        old_wts = self.state_vars.ptf_wts
+        # Get the direction of the change in weights (the action is the change in risky asset weights)
+        risky_weights = action
+        wt_chg_direction = np.hstack( [ -risky_weights.sum(), risky_weights ] )
+        old_wts = self.state_vars.ptf_asset_vals / self.state_vars.ptf_asset_vals.sum()
         new_wts = old_wts + wt_chg_direction
         
         # Find maximally violated constraint

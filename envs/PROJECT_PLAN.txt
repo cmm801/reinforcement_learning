@@ -31,7 +31,6 @@ When we do updates, we can use the expected values of the reward and of the valu
 Testing:
 - Objective functions
 - Utility functions
-- Parsing observations
 - Parsing of parameters
 - Observation space
 - Action space
@@ -40,7 +39,6 @@ Testing:
 
 
 Generalization:
-- Replace weights with asset market values in the environment
 - Rescale transaction sizes if they cause the cash level to go below its minimum allowed level
 - Allow transaction costs to be a single number or an array with length equal to the number of risky assets
 - Allow shorting/leverage constraints to be a single number or an array of length equal to # of risky assets

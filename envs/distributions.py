@@ -6,7 +6,7 @@ ExponentialUtilityFunction = lambda ptf_val : -np.exp(-2*ptf_val)
 ParameterRanges = namedtuple( 'ParamRange', [ 'low', 'high' ] )
 class AssetProcess(ABC):
     
-    def __init__(self, np_random, n_risky_assets=1, n_periods_per_year=52):
+    def __init__(self, np_random, n_risky_assets=1, n_periods_per_year=12):
         self.np_random = np_random
         self.n_risky_assets = n_risky_assets
         self.n_periods_per_year = n_periods_per_year
@@ -15,9 +15,9 @@ class AssetProcess(ABC):
         self.reset_distribution()
     
     def generate_random_returns(self, n_samples=1):
-        exc_rtns = self.distrib.random(n_samples=n_samples)
-        ann_asset_rtns = self.risk_free_rate + np.hstack( [ np.zeros( (exc_rtns.shape[0],1) ), exc_rtns])
-        return self._deannualize_return(ann_asset_rtns)
+        exc_rtns_one_period = self.distrib.random(n_samples=n_samples)
+        rfr_one_period = self.risk_free_rate / self.n_periods_per_year
+        return rfr_one_period + np.hstack( [ [0], exc_rtns_one_period.ravel() ])
              
     def evolve(self):
         """ Given an asset distribution, this method evolves the process to the next time step.
@@ -30,9 +30,6 @@ class AssetProcess(ABC):
         array_of_params = self.np_random.uniform( param_ranges.low, param_ranges.high )
         params = self.array_to_params(array_of_params)
         self.set_distribution(params)
-
-    def _deannualize_return(self, rtn):
-        return -1 + np.power(1 + rtn, 1/self.n_periods_per_year)
         
     @abstractmethod        
     def get_parameter_ranges(self):
@@ -91,16 +88,19 @@ class NormalStaticProcess(AssetProcess):
         return np.hstack( [ params['mu'].ravel(), chol[idx].ravel() ] )
         
     def set_distribution(self, params):
-        self.distrib = NormalDistribution( self.np_random, params['mu'], params['sigma'])
+        self.distrib = NormalDistribution( self.np_random, self.n_periods_per_year, \
+                                                      params['mu'], params['sigma'])
             
 class LognormalStaticProcess(NormalStaticProcess):
     def set_distribution(self, params):
-        self.distrib = LognormalDistribution( self.np_random, params['mu'], params['sigma'])
+        self.distrib = LognormalDistribution( self.np_random, self.n_periods_per_year, \
+                                                      params['mu'], params['sigma'])
 
 class Distribution(ABC):
 
-    def __init__(self, np_random ):
+    def __init__(self, np_random, n_periods_per_year ):
         self.np_random = np_random
+        self.n_periods_per_year = n_periods_per_year
 
     @abstractmethod
     def random(self, n_samples=1):
@@ -108,8 +108,8 @@ class Distribution(ABC):
         
 class NormalDistribution(Distribution):
         
-    def __init__(self, np_random, mu, sigma ):
-        super().__init__(np_random)        
+    def __init__(self, np_random, n_periods_per_year, mu, sigma ):
+        super().__init__(np_random, n_periods_per_year)        
         M = np.array(mu)
         S = np.array( sigma )
         assert S.ndim == 2 and S.shape[0] == S.shape[1], 'Covariance must be a square matrix.'
@@ -118,8 +118,14 @@ class NormalDistribution(Distribution):
         self.sigma = S
         
     def random(self, n_samples=1):
-        return self.np_random.multivariate_normal(self.mu, self.sigma, size=n_samples)
+        T = self.n_periods_per_year
+        M = self.mu / T
+        S = self.sigma / T
+        return self.np_random.multivariate_normal( M, S, size=n_samples)
                 
 class LognormalDistribution(NormalDistribution):
     def random(self, n_samples=1):
-        return -1 + np.exp( self.np_random.multivariate_normal(self.mu, self.sigma, size=n_samples) )
+        T = self.n_periods_per_year        
+        M = self.mu / T
+        S = self.sigma / T
+        return -1 + np.exp( self.np_random.multivariate_normal( M, S, size=n_samples) )
