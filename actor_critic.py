@@ -28,8 +28,7 @@ class ActorCritic():
         if isinstance( env, EnvBatch ):
             self.env = env
         else:
-            env_name = env.unwrapped.spec.id
-            self.env = EnvBatch(env_name)
+            self.env = EnvBatch(init_fun=env)
         
         # Extract action space / observation space information from the environment
         self._env_helper = EnvHelper(env, action_space_distr=action_space_distr)
@@ -100,8 +99,7 @@ class ActorCritic():
 
             # Critic loss calculation
             target_state_values = rewards + gamma * next_state_values
-            critic_loss = tf.reduce_mean( tf.square( state_values - tf.stop_gradient(target_state_values) ) )
-            
+            critic_loss = tf.reduce_mean( tf.square( state_values - tf.stop_gradient(target_state_values) ) )            
             
         grads_actor = tape.gradient( actor_loss, self.actor_model.trainable_variables )
         grads_critic = tape.gradient( critic_loss, self.critic_model.trainable_variables )
@@ -123,7 +121,7 @@ class ActorCritic():
         """Plays an a game from start till done, returns per-game rewards """
 
         # Create a temporary environment to play some games
-        tmp_env = make_env( self.env.environ_name, max_steps=self.env.max_steps)
+        tmp_env = self.env.init_fun()
         
         game_rewards = []
         for _ in range(n_games):
@@ -197,13 +195,12 @@ class ActorCritic():
 class EnvBatch():
     """A class that allows us to play several games simultaneously, which improves the 
             convergence properties of A2C."""
-    
-    def __init__(self, environ_name, n_envs = 1, max_steps=None):
+       
+    def __init__(self, init_fun, n_envs = 1):
         """ Create n_envs different environments for the possibility of asynchronous training. """
-        self.environ_name = environ_name
+        self.init_fun = init_fun
         self.n_envs = n_envs
-        self.max_steps = max_steps
-        self.envs = [make_env(environ_name, max_steps=max_steps) for _ in range(n_envs)]        
+        self.envs = [ init_fun() for _ in range(n_envs)] 
         self.action_space = self.envs[0].action_space
         self.observation_space = self.envs[0].observation_space        
         
@@ -377,7 +374,7 @@ def get_mlp_layers( env, mlp_dims=(40,40), action_space_distr=None, activation='
         dns = Dense(hidden_layer_size, activation=activation )(dns)
     return x, dns
 
-def get_mlp_actor( env, mlp_dims=(20,20), action_space_distr=None, activation='elu' ):
+def get_mlp_actor( env, mlp_dims=(40,40), action_space_distr=None, activation='elu' ):
     env_helper = EnvHelper( env, action_space_distr=action_space_distr)    
     x, dns = get_mlp_layers( env, mlp_dims=mlp_dims, activation=activation, \
                             action_space_distr=action_space_distr )

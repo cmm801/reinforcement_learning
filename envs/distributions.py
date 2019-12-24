@@ -53,6 +53,11 @@ class AssetProcess(ABC):
     
 class NormalStaticProcess(AssetProcess):
     
+    def __init__(self, np_random, n_risky_assets=1, n_periods_per_year=12):
+        self._tril_indices = np.tril_indices(n_risky_assets)        
+        super().__init__(np_random=np_random, n_risky_assets=n_risky_assets, \
+                                              n_periods_per_year=n_periods_per_year)
+    
     def get_parameter_ranges(self):
         min_rtn, max_rtn = -0.05, +0.10
         min_std, max_std = 0.01, 0.30
@@ -61,7 +66,7 @@ class NormalStaticProcess(AssetProcess):
         mu_high = max_rtn * np.ones( (N,) )
         
         # Get the upper/lower bounds for covariance entries
-        idx = np.tril_indices(N)        
+        idx = self._tril_indices
         sigma_low_mtx = -(max_std ** 2) * np.ones((N,N), dtype=np.float32)
         sigma_low_mtx[np.eye(N) == 1] = min_std ** 2 # Variances must be non-negative
         sigma_low = sigma_low_mtx[idx].ravel()
@@ -76,7 +81,7 @@ class NormalStaticProcess(AssetProcess):
         N = self.n_risky_assets
         assert len(array[N:]) == N*(N+1) // 2, 'Dimensional mismatch.'
         mu = array[:N]
-        idx = np.tril_indices(N)
+        idx = self._tril_indices
         chol = np.zeros((N,N))
         chol[idx] = array[N:]
         sigma = np.matmul(chol, chol.T)
@@ -84,7 +89,7 @@ class NormalStaticProcess(AssetProcess):
     
     def params_to_array(self, params):
         chol = np.linalg.cholesky(params['sigma'])
-        idx = np.tril_indices(self.n_risky_assets)
+        idx = self._tril_indices
         return np.hstack( [ params['mu'].ravel(), chol[idx].ravel() ] )
         
     def set_distribution(self, params):
