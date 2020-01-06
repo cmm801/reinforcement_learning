@@ -19,7 +19,10 @@ def run_all_tests():
     
     dirichet = DirichletTests()
     dirichet.run_tests()
-
+    
+    multibeta = MultiBetaTests()
+    multibeta.run_tests()
+    
     print( 'All tests have passed.')
 
 class BaseTest(ABC):
@@ -43,7 +46,10 @@ class BaseTest(ABC):
             array = self.ran_gen.randn(n_obs, n_params)
             dist.set_distribution_from_array(array) 
             samples = dist.sample(n_samples)
-            assert samples.shape == (n_samples, n_obs, dist.dim ), 'Incorrect dimensions.'
+            if dist.dim > 0:
+                assert samples.shape == (n_samples, n_obs, dist.dim ), 'Incorrect dimensions.'
+            else:
+                assert samples.shape == (n_samples, n_obs ), 'Incorrect dimensions.'
     
     def _test_prob(self):
         distribs = self.get_distributions()
@@ -83,7 +89,7 @@ class BaseTest(ABC):
         for dist in distribs:
             n_obs = self.ran_gen.choice(20)
             n_params = dist.get_number_of_params()
-            array = np.ones( (n_obs, n_params) )
+            array = tf.ones( (n_obs, n_params) )
             dist.set_distribution_from_array(array)
             assert dist.entropy().numpy().shape == (n_obs,), 'Entropy shape is incorrect.'
 
@@ -114,11 +120,11 @@ class CategoricalTests(BaseTest):
             n_obs = self.ran_gen.choice(20)
             n_samples = self.ran_gen.choice(20)            
             n_params = dist.get_number_of_params()            
-            array = np.ones( (n_obs, n_params) )
+            array = tf.ones( (n_obs, n_params) )
             dist.set_distribution_from_array(array)
             N = dist.n_categories
             for j in range(N):
-                assert np.all( np.isclose( 1/N, dist.prob(np.atleast_3d(j) ) ) ), \
+                assert np.all( np.isclose( 1/N, dist.prob( tf.convert_to_tensor( np.atleast_3d(j) ) ) ) ), \
                                             'Probability values are incorrect.'
                 assert np.all( np.isclose( np.log(1/N), dist.log_prob( np.atleast_3d(j) ) ) ), \
                                             'Log Probability values are incorrect.'
@@ -138,28 +144,31 @@ class BetaTests(BaseTest):
             n_obs = self.ran_gen.choice(20)
             n_samples = self.ran_gen.choice(20)            
             n_params = dist.get_number_of_params()            
-            array = np.ones( (n_obs, n_params) )
+            array = tf.ones( (n_obs, n_params) )
             dist.set_distribution_from_array(array)
             L = dist.low
             H = dist.high
             M = (L + H) / 2
-            assert np.all( np.isclose( 0,   dist.prob( np.atleast_3d(L) ).numpy() ) ), 'Probability values are incorrect.'
-            assert np.all( np.isclose( 0,   dist.prob( np.atleast_3d(H) ).numpy() ) ), 'Probability values are incorrect.'
-            assert np.all( np.isclose( 1.5, dist.prob( np.atleast_3d(M) ).numpy() ) ), 'Probability values are incorrect.'
-            assert np.all( np.isclose( -np.inf,     dist.log_prob( np.atleast_3d(L) ).numpy() ) ), \
-                                                    'Probability values are incorrect.'
-            assert np.all( np.isclose( -np.inf,     dist.log_prob( np.atleast_3d(H) ).numpy() ) ), \
-                                                    'Probability values are incorrect.'
-            assert np.all( np.isclose( np.log(1.5), dist.log_prob( np.atleast_3d(M) ).numpy() ) ), \
-                                                    'Probability values are incorrect.'
+            assert np.all( np.isclose( 0,   dist.prob( tf.convert_to_tensor( np.atleast_3d(L) ).numpy() ) ) ), \
+                                                                'Probability values are incorrect.'
+            assert np.all( np.isclose( 0,   dist.prob( tf.convert_to_tensor( np.atleast_3d(H) ).numpy() ) ) ), \
+                                                                'Probability values are incorrect.'
+            assert np.all( np.isclose( 1.5, dist.prob( tf.convert_to_tensor( np.atleast_3d(M) ).numpy() ) ) ), \
+                                                                'Probability values are incorrect.'
+            assert np.all( np.isclose( -np.inf,     dist.log_prob( tf.convert_to_tensor( np.atleast_3d(L) ).numpy() ) ) ), \
+                                                                'Probability values are incorrect.'
+            assert np.all( np.isclose( -np.inf,     dist.log_prob( tf.convert_to_tensor( np.atleast_3d(H) ).numpy() ) ) ), \
+                                                                'Probability values are incorrect.'
+            assert np.all( np.isclose( np.log(1.5), dist.log_prob( tf.convert_to_tensor( np.atleast_3d(M) ).numpy() ) ) ), \
+                                                                'Probability values are incorrect.'
 
     def get_distributions(self):
         low_arr = [ 0, -10, 0, 4 ]
         high_arr = [ 1, 10, 12, 11 ]
         distribs = []
         for j in range(len(low_arr)):
-            low = np.array([ low_arr[j] ])
-            high = np.array( [high_arr[j]] )
+            low = tf.convert_to_tensor([ low_arr[j] ])
+            high = tf.convert_to_tensor( [high_arr[j]] )
             distribs.append( distributions.Beta( low=low, high=high ) )
         return distribs                                   
 
@@ -202,4 +211,15 @@ class DirichletTests(BaseTest):
             high = low + length
             distribs.append( distributions.Dirichlet( low=low, high=high ) )
         return distribs
+        
     
+class MultiBetaTests(BaseTest):
+    def get_distributions(self):
+        dims = [ 1, 2, 5, 8 ]
+        distribs = []
+        for dim in dims:
+            low = self.ran_gen.randn(dim)
+            length = 0.1 + self.ran_gen.choice(20, dim)
+            high = low + length
+            distribs.append( distributions.MultiBeta( low=low, high=high ) )
+        return distribs    

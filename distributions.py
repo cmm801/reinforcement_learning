@@ -72,20 +72,18 @@ class Distribution(ABC):
 class Categorical(Distribution):
     def __init__(self, n_categories):
         super().__init__()
-        self.dim = 1
+        self.dim = 0
         self.n_categories = n_categories
         self.range_type = RT_DISCRETE
     
     def prob(self, values):
-        squeezed_vals = tf.squeeze( values, axis=2 )
-        return self._distrib.prob(squeezed_vals)
+        return self._distrib.prob(values)
     
     def entropy(self):
         return self._distrib.entropy()
     
     def sample(self, n_samples=1):
-        raw_samples = self._distrib.sample(n_samples)
-        return tf.expand_dims( raw_samples, axis=2 )
+        return self._distrib.sample(n_samples)
     
     def set_distribution(self, logits):
         self._check_param_dimensions(logits)
@@ -111,8 +109,8 @@ class Categorical(Distribution):
 class BaseContinuous(Distribution):
     def __init__(self, low, high):
         super().__init__()
-        self.dim = low.size
-        self._set_distribution_range(low=low, high=high)
+        self._set_distribution_range(low=low, high=high)        
+        self.dim = self.low.size
         self._set_name()
         
     def prob(self, values):
@@ -124,18 +122,18 @@ class BaseContinuous(Distribution):
         return self._scale_samples_to_range(unscaled_samples)        
         
     def _set_distribution_range(self, low, high ):
-        self.low = low
-        self.high = high
-        if np.any(low == -np.inf) or np.any(high == np.inf):
+        self.low = np.array( low ).ravel()
+        self.high = np.array( high ).ravel()
+        if np.any(self.low == -np.inf) or np.any(self.high == np.inf):
             self.range_type = RT_UNBOUNDED
-        elif np.all(low > -np.inf) and np.all(high < np.inf):
+        elif np.all(self.low > -np.inf) and np.all(self.high < np.inf):
             self.range_type = RT_COMPACT
         else:
             self.range_type = RT_UNKNOWN
         
     def _scale_samples_to_range(self, samples):
         if self.range_type == RT_UNBOUNDED:
-            return np.clip( samples, self.low, self.high )
+            return tf.clip_by_value( samples, self.low, self.high )
         elif self.range_type == RT_COMPACT:
             return self.low + (self.high - self.low) * samples
         else:
@@ -260,7 +258,7 @@ class Beta(TFPTFPContinuous):
         
     def set_distribution(self, concentration1, concentration0):
         self._check_param_dimensions(concentration1, concentration0)
-        params = dict(concentration1=concentration1, concentration0=concentration0)
+        params = dict( concentration1=concentration1, concentration0=concentration0)
         self._distrib = tfp.distributions.Beta(**params)
     
     def get_number_of_params(self):
@@ -268,8 +266,8 @@ class Beta(TFPTFPContinuous):
     
     def get_params_from_array(self, array):
         self._check_array_dimensions(array)        
-        return dict( concentration1=array[:,[0]], \
-                     concentration0=array[:,[1]] )
+        return dict( concentration1=tf.boolean_mask( array, np.array( [ True, False ] ), axis=1 ), \
+                     concentration0=tf.boolean_mask( array, np.array( [ False, True ] ), axis=1 ) )
     
     def get_array_from_params(self, params):
         return np.hstack( [ params['concentration1'], params['concentration0'] ] )
@@ -315,38 +313,45 @@ class Dirichlet(TFPTFPContinuous):
         
 
 class MultiBeta(TFPTFPContinuous):
+    def __init__(self, low, high):
+        super().__init__(low=low, high=high)
+        self._distrib = [ Beta( L, H ) for L, H in \
+                         zip( tf.split( self.low, self.dim ), tf.split( self.high, self.dim ) ) ]        
+        
     def set_distribution(self, concentration1, concentration0 ):
-        concentration1 = np.array(concentration1, dtype=np.float32)
-        concentration0 = np.array(concentration0, dtype=np.float32)
-        self._distrib = [ Beta(c_1, c_0) for c_1, c_0 in zip(concentration1, concentration0) ]
+        self.concentration1 = concentration1
+        self.concentration0 = concentration0
+        [ d.set_distribution(c_1, c_0) for d, c_1, c_0 in zip( self._distrib, \
+                                                              tf.split( self.concentration1, self.dim, axis=1 ), \
+                                                              tf.split( self.concentration0, self.dim, axis=1 ) ) ]
+
+    def set_distribution_from_array(self, array, preprocess=True):
+        [ d.set_distribution_from_array(arr) for d, arr in \
+                    zip( self._distrib, tf.split( array, self.dim, axis=1 ) ) ]
         
     def prob(self, value):
-        value = np.atleast_2d(value)
-        independent_probs = [ self._distrib[j].prob(value[:,j]) for j in range(self.n_dims) ]
-        return np.product( independent_probs, axis=0 )
+        return tf.reduce_prod( [ d.prob(val) for d, val in zip( self._distrib, tf.split( value, self.dim, axis=2) ) ], axis=0 )
     
     def entropy(self):
-        return np.sum( [ d.entropy() for d in self._distrib ] )
+        return tf.reduce_sum( [ d.entropy() for d in self._distrib ], axis=0 )
     
-    def _sample_unscaled(self, n_samples=1):
-        samples = np.hstack( [ d.sample(n_samples) for d in self._distrib ] )
+    def sample(self, n_samples=1):
+        sample_array = [ d.sample(n_samples=n_samples) for d in self._distrib ]
+        return tf.squeeze( tf.stack( sample_array, axis=2 ), axis=3 )
         
     def get_number_of_params(self):
         return 2 * self.dim
     
     def get_params_from_array(self, array):
-        self._check_array_dimensions(array)        
-        return dict(concentration1=array[:,:0], \
-                    concentration0=array[:,:1] )
+        self._check_array_dimensions(array)
+        return dict(concentration1=array[:,:self.dim], \
+                    concentration0=array[:,self.dim] )
     
     def get_array_from_params(self, params):
         return np.hstack( [ params['concentration1'], params['concentration0'] ] )
     
     def _set_name(self):
         self.name = 'multi-beta'
-                    
-    def _preprocess_params(self, params):
-        params['concentration1'] = 1 + tf.nn.relu( params['concentration1'] )
-        params['concentration0'] = 1 + tf.nn.relu( params['concentration0'] )
-        return params
-
+    
+    def _check_param_dimensions(self, concentration):
+        assert concentration.shape[1] == 2 * self.dim, 'Parameter dimension does not match that of the distribution.'        
