@@ -141,16 +141,16 @@ class ActorCritic():
                  actor=None, 
                  critic=None,
                  actor_learning_rate=0.001,
-                 critic_learning_rate=0.001
+                 critic_learning_rate=0.01,
+                 gamma=0.99
                 ):
-
-        # Set parameters
         if isinstance( env, EnvBatch ):
             self.env = env
         else:
             self.env = EnvBatch(init_fun=env)
         
         # Set parameters
+        self.gamma = gamma        
         self.entropy_coef = entropy_coef    # The coefficient of entropy used in the loss function
         self.reward_scale = reward_scale    # rescale rewards to keep gradients from exploding
         
@@ -162,7 +162,7 @@ class ActorCritic():
         self.actor_optimizer = tf.optimizers.Adam(learning_rate=actor_learning_rate)        
         self.critic_optimizer = tf.optimizers.Adam(learning_rate=critic_learning_rate)
     
-    def train_step(self, states, next_states, actions, rewards, is_done, gamma=0.99):
+    def train_step(self, states, next_states, actions, rewards, is_done ):
         """Train the neural network from the states, rewards and transitions."""
         
         with tf.GradientTape(persistent=True) as tape:
@@ -181,13 +181,13 @@ class ActorCritic():
             logp_actions = tf.squeeze( distrib.log_prob( tf.expand_dims( actions, axis=0) ), axis=0 )
 
             # Actor loss calculation (policy gradient approach)
-            advantage = rewards + gamma * next_state_values - state_values
+            advantage = rewards + self.gamma * next_state_values - state_values
             entropy = distrib.entropy()
             actor_loss = -tf.reduce_mean( logp_actions * tf.stop_gradient(advantage) ) \
                          -self.entropy_coef * tf.reduce_mean(entropy)
 
             # Critic loss calculation
-            target_state_values = rewards + gamma * next_state_values
+            target_state_values = rewards + self.gamma * next_state_values
             critic_loss = tf.reduce_mean( tf.square( state_values - tf.stop_gradient(target_state_values) ) )            
 
         grads_actor = tape.gradient( actor_loss, self.actor.get_trainable_variables() )
@@ -208,9 +208,8 @@ class ActorCritic():
             state = tmp_env.reset()
             total_reward = 0
             while True:
-                action = self.actor.sample_actions(state[np.newaxis,:]).numpy()
-                if self.actor._env_helper.action_helper.type == 'discrete':
-                    action = action[0]
+                action = self.actor.sample_actions(state).numpy()
+                action = action[0]
                 state, reward, done, info = tmp_env.step(action)
                 total_reward += reward
                 if done: break
@@ -220,7 +219,7 @@ class ActorCritic():
             game_rewards.append(total_reward / self.reward_scale)
         return game_rewards       
     
-    def train(self, n_train_steps=100, batch_states=None, gamma=0.99):
+    def train(self, n_train_steps=100, batch_states=None ):
         """Run training for a set number of training steps."""        
         if batch_states is None:
             batch_states = self.env.reset()
@@ -231,11 +230,11 @@ class ActorCritic():
             tot_rewards.append(batch_rewards)
             # Train the model from the states, rewards and transitions
             actor_loss, critic_loss, ent_t = self.train_step( batch_states, batch_next_states, \
-                                          batch_actions, batch_rewards, batch_done, gamma=gamma )
+                                          batch_actions, batch_rewards, batch_done )
             batch_states = batch_next_states
         return batch_states, tot_rewards, ent_t
                 
-    def train_and_display(self, n_iters=2000, gamma=0.99, n_games_per_plot_update=3, 
+    def train_and_display(self, n_iters=2000, n_games_per_plot_update=3, 
                           n_iters_per_plot_update=100, stop_score=None ):
         """Run the training for a number of iterations, and regularly plot the progress."""
         # Get the initial states
@@ -244,8 +243,9 @@ class ActorCritic():
         entropy_history = []
         n_rounds = n_iters // n_iters_per_plot_update
         for j in trange(n_rounds):
+            print(j)
             batch_states, tot_rewards, ent_t = self.train( n_train_steps=n_iters_per_plot_update, \
-                                                       batch_states=batch_states, gamma=gamma)
+                                                       batch_states=batch_states )
             entropy_history.append(np.mean(ent_t))
             scores = self.play_games(n_games=n_games_per_plot_update)
             rewards_min.append(np.min(scores))                    
@@ -275,6 +275,12 @@ class ActorCritic():
                 break
 
         return rewards_mean, rewards_min, rewards_max, entropy_history
+
+    def set_actor_learning_rate(self, actor_learning_rate=0.001):
+        self.actor_optimizer.learning_rate = actor_learning_rate
+
+    def set_critic_learning_rate(self, critic_learning_rate=0.01):
+        self.critic_optimizer.learning_rate = critic_learning_rate            
     
     
 class EnvBatch():
@@ -298,11 +304,7 @@ class EnvBatch():
         Send a vector[batch_size] of actions into respective environments
         :returns: observations[n_envs, *obs_shape], rewards[n_envs], done[n_envs,], info[n_envs]
         """
-        if isinstance( self.action_space, gym.spaces.Discrete ):
-            results = [ env.step(a) for env, a in zip(self.envs, actions.numpy() ) ]
-        else:
-            results = [ env.step(a[0]) for env, a in zip(self.envs, actions.numpy() ) ]            
-            
+        results = [ env.step(a) for env, a in zip(self.envs, actions.numpy() ) ]
         new_obs, rewards, done, info = map(np.array, zip(*results))
         
         # reset environments automatically

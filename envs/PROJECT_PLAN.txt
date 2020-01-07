@@ -27,6 +27,7 @@ When we do updates, we can use the expected values of the reward and of the valu
 7. Updating state values based on sampling is often more efficient than calculating the expected value following a state/action pair (chapter 8.5)
 8. To decide which states should be updated (in order to avoid doing a time-consuming exhaustive sweep of the entire state space), we can generate sample trajectories through the state space using the current policy, and then use the resulting state/action pairs to decide what to update.(chapter 8.6)
 9. Iniitialize value function to an optimistic value - this will encourage exploration (Chapter 10.1)
+10. Try eligibility traces and LSTD for training critic
 
 
 Testing:
