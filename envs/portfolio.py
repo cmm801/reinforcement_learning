@@ -1,7 +1,7 @@
 import gym
 import numpy as np
 from collections import namedtuple
-import distributions
+import envs.portfolio_distributions
 
 # Define a named tuple to help with parameters
 fields = [ 'timestamp', 'ptf_asset_vals', 'bmk_asset_vals', 'process_params' ]
@@ -27,13 +27,13 @@ class PortfolioEnv(gym.Env):
                   min_short=0.0,
                   max_long=1.0,
                   n_periods_per_year=12,
-                  n_years=10,
-                  is_static=True,
-                  asset_process_name='lognormal-static'
+                  is_recurrent=True,                 
+                  asset_process=None, 
+                  max_episode_steps=200
                 ):
         """This environment takes the parameters of its distribution as inputs."""
         super( self.__class__, self).__init__()
-
+        
         # Save input arguments        
         input_args = locals()
         for field_name, input_val in input_args.items():
@@ -42,6 +42,9 @@ class PortfolioEnv(gym.Env):
         if benchmark_weights is not None:
             self.benchmark_weights = np.array( benchmark_weights )
         
+        assert self.asset_process is None or isinstance( self.asset_process, \
+                    envs.portfolio_distributions.AssetProcess ), 'Invalid input for asset_process.'
+                
         # Set the internal random number generator, whose seed can be used to obtain reproducible results
         self.np_random = np.random.RandomState()
         
@@ -74,21 +77,33 @@ class PortfolioEnv(gym.Env):
         else:
             bmk_kwargs = dict( ptf_asset_vals=self.state_vars.bmk_asset_vals, asset_rtns=asset_rtns )            
             new_bmk_asset_vals = self._calc_ptf_asset_vals(**bmk_kwargs)
-        
+                    
         # Save the state process, and Evolve the asset process (if it is non-static)
         old_state_vars = self.state_vars
         self.asset_process.evolve()
-        self.state_vars = StateVariables( timestamp=1 + old_state_vars.timestamp,
-                                          ptf_asset_vals=new_ptf_asset_vals, 
-                                          bmk_asset_vals=new_bmk_asset_vals,                                          
-                                          process_params=self.asset_process.get_parameters() )
-        obs = self._get_observation_from_state_vars()
+        new_state_vars = StateVariables( timestamp=1 + old_state_vars.timestamp,
+                                         ptf_asset_vals=new_ptf_asset_vals,
+                                         bmk_asset_vals=new_bmk_asset_vals,
+                                         process_params=self.asset_process.get_parameters() )
         
         # Calculate the reward from the old and new state parameters        
-        reward = self._calculate_reward( old_state_vars, self.state_vars )
-        done = np.isclose( self.state_vars.ptf_asset_vals.sum(), 0.0 ) or \
-               (self.state_vars.timestamp == self.n_years * self.n_periods_per_year) 
-        info = {'asset_rtns' : asset_rtns, 'chg_wts' : chg_wts }        
+        reward = self._calculate_reward( old_state_vars, new_state_vars )
+        done = new_ptf_asset_vals.sum() <= 1e-4 or \
+               self.state_vars.timestamp >= self.max_episode_steps 
+        info = {'asset_rtns' : asset_rtns, 'chg_wts' : chg_wts }
+        
+        # Rescale portfolio values so they sum to 1 if the environment is recurrent
+        if self.is_recurrent:
+            new_ptf_asset_vals /= new_ptf_asset_vals.sum()
+            if self.benchmark_weights is not None:
+                new_bmk_asset_vals /= new_bmk_asset_vals.sum()
+            self.state_vars = StateVariables( timestamp=1 + old_state_vars.timestamp,
+                                              ptf_asset_vals=new_ptf_asset_vals,
+                                              bmk_asset_vals=new_bmk_asset_vals,
+                                              process_params=self.asset_process.get_parameters() )
+        else:
+            self.state_vars = new_state_vars
+        obs = self._get_observation_from_state_vars()        
         return obs, reward, done, info
         
     def reset(self):
@@ -106,15 +121,20 @@ class PortfolioEnv(gym.Env):
         pass
     
     def parse_observation( self, obs ):
-        N = self.n_risky_assets        
-        timestamp=obs[0]
-        ptf_asset_vals=obs[1:N+2].ravel()
+        N = self.n_risky_assets
+        if not self.is_recurrent:
+            timestamp = obs[0]
+            obs = obs[1:]
+        else:
+            timestamp = None
+            
+        ptf_asset_vals=obs[2:N+3].ravel()
         if self.benchmark_weights is not None:
-            bmk_asset_vals=obs[2+N:3+2*N].ravel()        
-            process_params = self.asset_process.array_to_params(obs[3+2*N:])
+            bmk_asset_vals=obs[3+N:4+2*N].ravel()
+            process_params = self.asset_process.array_to_params(obs[4+2*N:])
         else:
             bmk_asset_vals = None
-            process_params = self.asset_process.array_to_params(obs[2+N:])
+            process_params = self.asset_process.array_to_params(obs[3+N:])
             
         return StateVariables( timestamp=timestamp,
                                ptf_asset_vals=ptf_asset_vals, 
@@ -123,7 +143,7 @@ class PortfolioEnv(gym.Env):
     
     def set_utility_function(self, utility_fun):
         if utility_fun is None:
-            self.utility_fun = distributions.ExponentialUtilityFunction
+            self.utility_fun = envs.portfolio_distributions.ExponentialUtilityFunction(alpha=2)
         else:
             self.utility_fun = utility_fun
             
@@ -134,19 +154,19 @@ class PortfolioEnv(gym.Env):
                                           ptf_asset_vals=sv.ptf_asset_vals,
                                           bmk_asset_vals=sv.bmk_asset_vals, 
                                           process_params=new_asset_process.get_parameters() )
-        return self._get_observation_from_state_vars()
             
     def _get_observation_from_state_vars(self):
         sv = self.state_vars
+        obs = []
+        if not self.is_recurrent:
+            obs.append( sv.timestamp ) 
+            
+        obs.append( sv.ptf_asset_vals.ravel() )
         if self.benchmark_weights is not None:
-            return np.hstack( [ sv.timestamp, 
-                                sv.ptf_asset_vals.ravel(), 
-                                sv.bmk_asset_vals.ravel(), 
-                                self.asset_process.params_to_array(sv.process_params) ] )
-        else:
-            return np.hstack( [ sv.timestamp, 
-                                sv.ptf_asset_vals.ravel(),  
-                                self.asset_process.params_to_array(sv.process_params) ] )        
+            sv.bmk_asset_vals.ravel()
+            
+        obs.append( self.asset_process.params_to_array(sv.process_params) )
+        return np.hstack(obs)
         
     def _get_asset_process_parans(self):
         return self.asset_process.params_to_array( self.asset_process.get_parameters() )
@@ -167,21 +187,24 @@ class PortfolioEnv(gym.Env):
             raise ValueError( 'Unsupported objective: {}'.format(objective) )
 
         # Discount the objective before applying the utility function
-        gamma = self.get_gamma()            
+        gamma = self.get_gamma()
         reward = self.utility_fun( gamma * x_new ) - self.utility_fun( x_old )
         return reward
     
     def get_gamma(self):
         """Get the discount factor from the risk-free rate."""
-        return - 1 + np.power( 1 + self.asset_process.risk_free_rate, 1 / self.n_periods_per_year )
+        if self.is_recurrent:
+            return 1.0
+        else:
+            return 1 / np.power( 1 + self.asset_process.risk_free_rate, 1 / self.n_periods_per_year )
         
     def _setup_spaces(self):
         """Set up the action and observation spaces."""
-        # Actions are the changes in weights of all assets (cash + the risky assets)
+        # Actions are the changes in weights of risky
         N = self.n_risky_assets
-        wt_interval = self.max_long - self.min_short
-        self.action_space = gym.spaces.Box( low  = -wt_interval * np.ones( (N+1,) ), 
-                                            high = +wt_interval * np.ones( (N+1,) ) )
+        self.action_space = gym.spaces.Box( low  = -np.ones( (N,) ), 
+                                            high = +np.ones( (N,) ) )
+        
         # Define the dimensions of the observation space, starting with the portfolio value & weights
         param_ranges = self.asset_process.get_parameter_ranges()
         min_asset_val, max_asset_val = -np.inf, np.inf
@@ -193,9 +216,15 @@ class PortfolioEnv(gym.Env):
             low = np.hstack( [ low, low ] )
             high = np.hstack( [ high, high ] )
             
-        # Add the parameter ranges and the timestamp
-        low  = np.hstack( [ 0, low, param_ranges.low ] )
-        high = np.hstack( [ self.n_years * self.n_periods_per_year, high, param_ranges.high ] )        
+        # Add the parameter ranges
+        low  = np.hstack( [ low, param_ranges.low ] )
+        high = np.hstack( [ high, param_ranges.high ] )
+        
+        # Add the timestamp, for non-recurrent environments
+        if not self.is_recurrent:
+            low  = np.hstack( [ 0, low ] )
+            high = np.hstack( [ self.max_episode_steps, high ] )
+            
         self.observation_space = gym.spaces.Box( low=low, high=high )
     
     def _calc_ptf_asset_vals( self, ptf_asset_vals, asset_rtns, chg_wts=None ):
@@ -213,7 +242,11 @@ class PortfolioEnv(gym.Env):
         return ptf_asset_vals_ex_cost.ravel() * (1 + asset_rtns.ravel() )
                
     def _generate_initial_portfolios(self):
-        initial_ptf_val = 1.0 - 0.1 * self.np_random.randn()
+        if self.is_recurrent:
+            initial_ptf_val = 1.0
+        else:
+            initial_ptf_val = 1.0 - 0.1 * self.np_random.randn()
+            
         initial_ptf_wts = self.np_random.dirichlet( np.ones( (1 + self.n_risky_assets,) ) )
         ptf_asset_vals = initial_ptf_val * initial_ptf_wts
 
@@ -225,13 +258,9 @@ class PortfolioEnv(gym.Env):
             
     def _generate_initial_process(self):
         process_args = dict(n_risky_assets=self.n_risky_assets, np_random=self.np_random, \
-                            n_periods_per_year=self.n_periods_per_year)
-        if self.asset_process_name == 'lognormal-static':
-            self.asset_process = distributions.LognormalStaticProcess(**process_args)                        
-        elif self.asset_process_name == 'normal-static':
-            self.asset_process = distributions.NormalStaticProcess(**process_args)
-        else:
-            raise ValueError('Unsupported process name: {}'.format(self.asset_process_name) )
+                            n_periods_per_year=self.n_periods_per_year)            
+        self.asset_process = envs.portfolio_distributions.LognormalStaticProcess(**process_args)       
+
         return self.asset_process.get_parameters()    
     
     def _project_action_to_allowable_weight_space(self, action):
@@ -252,6 +281,7 @@ class PortfolioEnv(gym.Env):
             dist_to_bdry = wt - self.min_short if vec_len < 0 else self.max_long - wt
             wt_chg = dist_to_bdry / np.abs(vec_len) * wt_chg_direction
             
+        assert ~np.any( np.isnan(wt_chg) ), 'Changes in weights cannot be NaN.'
         assert np.isclose( wt_chg.sum(), 0 ), 'Changes in weights must sum to 0.'
         return wt_chg
         

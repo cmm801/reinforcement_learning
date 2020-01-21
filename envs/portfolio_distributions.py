@@ -2,7 +2,15 @@ import numpy as np
 from abc import ABC, abstractmethod
 from collections import namedtuple
 
-ExponentialUtilityFunction = lambda ptf_val : -np.exp(-2*ptf_val)
+def ExponentialUtilityFunction(alpha):
+    return lambda ptf_val : -100 * np.exp(-alpha * ptf_val)
+
+def PowerUtilityFunction(eta):
+    if eta == 1:
+        return lambda ptf_val : np.log(ptf_val)
+    else:
+        return lambda ptf_val : ( ( ptf_val ** (1-eta) ) - 1 ) / (1 - eta)
+
 ParameterRanges = namedtuple( 'ParamRange', [ 'low', 'high' ] )
 class AssetProcess(ABC):
     
@@ -17,7 +25,7 @@ class AssetProcess(ABC):
     def generate_random_returns(self, n_samples=1):
         exc_rtns_one_period = self.distrib.random(n_samples=n_samples)
         rfr_one_period = self.risk_free_rate / self.n_periods_per_year
-        return rfr_one_period + np.hstack( [ [0], exc_rtns_one_period.ravel() ])
+        return rfr_one_period + np.hstack( [ 0., exc_rtns_one_period.ravel() ])
              
     def evolve(self):
         """ Given an asset distribution, this method evolves the process to the next time step.
@@ -33,25 +41,25 @@ class AssetProcess(ABC):
         
     @abstractmethod        
     def get_parameter_ranges(self):
-        pass
+        raise NotImplementedError( 'Abstract method must be overridden by subclass.' )
     
     @abstractmethod
     def get_parameters(self):
-        pass
+        raise NotImplementedError( 'Abstract method must be overridden by subclass.' )
     
     @abstractmethod
     def array_to_params(self, array):
-        pass
+        raise NotImplementedError( 'Abstract method must be overridden by subclass.' )
     
     @abstractmethod
     def params_to_array(self, params):
-        pass
+        raise NotImplementedError( 'Abstract method must be overridden by subclass.' )
     
     @abstractmethod
     def set_distribution(self, params):
-        pass
+        raise NotImplementedError( 'Abstract method must be overridden by subclass.' )
     
-class NormalStaticProcess(AssetProcess):
+class LognormalStaticProcess(AssetProcess):
     
     def __init__(self, np_random, n_risky_assets=1, n_periods_per_year=12):
         self._tril_indices = np.tril_indices(n_risky_assets)        
@@ -91,12 +99,7 @@ class NormalStaticProcess(AssetProcess):
         chol = np.linalg.cholesky(params['sigma'])
         idx = self._tril_indices
         return np.hstack( [ params['mu'].ravel(), chol[idx].ravel() ] )
-        
-    def set_distribution(self, params):
-        self.distrib = NormalDistribution( self.np_random, self.n_periods_per_year, \
-                                                      params['mu'], params['sigma'])
-            
-class LognormalStaticProcess(NormalStaticProcess):
+
     def set_distribution(self, params):
         self.distrib = LognormalDistribution( self.np_random, self.n_periods_per_year, \
                                                       params['mu'], params['sigma'])
@@ -109,9 +112,9 @@ class Distribution(ABC):
 
     @abstractmethod
     def random(self, n_samples=1):
-        pass
+        raise NotImplementedError( 'Abstract method must be overridden by subclass.' )
         
-class NormalDistribution(Distribution):
+class LognormalDistribution(Distribution):
         
     def __init__(self, np_random, n_periods_per_year, mu, sigma ):
         super().__init__(np_random, n_periods_per_year)        
@@ -121,14 +124,7 @@ class NormalDistribution(Distribution):
         assert M.ndim == 1 and S.shape[0] == M.size, 'Covariance and mean dimensions must be the same.'
         self.mu = M        
         self.sigma = S
-        
-    def random(self, n_samples=1):
-        T = self.n_periods_per_year
-        M = self.mu / T
-        S = self.sigma / T
-        return self.np_random.multivariate_normal( M, S, size=n_samples)
-                
-class LognormalDistribution(NormalDistribution):
+
     def random(self, n_samples=1):
         T = self.n_periods_per_year        
         M = self.mu / T
