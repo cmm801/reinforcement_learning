@@ -12,7 +12,7 @@ from tensorflow.keras.layers import Dense, Input
 from tensorflow.keras.models import Model
 
 from abc import ABC, abstractmethod
-import distributions
+import algos.distributions as distributions
 
 class BaseModelAC(ABC):
     def __init__(self, model=None, feature_func=lambda x : x):
